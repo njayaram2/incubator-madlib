@@ -285,6 +285,8 @@ class IterationController:
         is kept.
         """
         updateKwargs.update(**self.kwargs)
+        # with MinWarning("debug"):
+        #     plpy.debug(newState + "\n**********************")
         newState = newState.format(iteration=self.iteration, **updateKwargs)
         self.iteration = self.iteration + 1
 
@@ -298,19 +300,25 @@ class IterationController:
                                           [None if self.new_state['_state'] is None
                                            else self.new_state['_state']])[0]
         else:
-            self.runSQL("""
+            qstr = """
                 INSERT INTO {rel_state}
                 SELECT
                     {iteration},
                     ({newState})
                 """.format(iteration=self.iteration,
                            newState=newState,
-                           **self.kwargs))
+                           **self.kwargs)
+            # with MinWarning("debug"):
+            #     plpy.debug(qstr)
+            self.runSQL(qstr)
             if self.truncAfterIteration:
                 self.runSQL("""
                     DELETE FROM {rel_state} AS _state
                     WHERE _state._iteration < {iteration}
                 """.format(iteration=self.iteration, **self.kwargs))
+        # with MinWarning("debug"):
+        #      plpy.debug("?????????")
+        #      plpy.debug(plpy.execute("select * from {rel_state} where _iteration={iteration}".format(iteration=self.iteration, **self.kwargs)))
 
 
 class IterationController2D(IterationController):
@@ -472,8 +480,7 @@ class IterationController2S(IterationController):
                         ) sub2
                     ) AS _state ON True
                 """.format(expression=expression).
-                    format(iteration=self.iteration,
-                           **self.kwargs))
+                format(iteration=self.iteration, **self.kwargs))
 
         if resultObject.nrows() == 0:
             return None
