@@ -1,0 +1,359 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ *
+ * @file graph.sql_in
+ *
+ * @brief SQL functions for graph analytics
+ * @date Nov 2016
+ *
+ * @sa Provides various graph algorithms.
+ *
+ *//* ----------------------------------------------------------------------- */
+m4_include(`SQLCommon.m4')
+
+
+/**
+@addtogroup grp_pagerank
+
+<div class="toc"><b>Contents</b>
+<ul>
+<li><a href="#pagerank">PageRank</a></li>
+<li><a href="#notes">Notes</a></li>
+<li><a href="#examples">Examples</a></li>
+<li><a href="#literature">Literature</a></li>
+</ul>
+</div>
+
+@brief Find the PageRank of all vertices in a directed graph.
+
+@anchor pagerank
+@par PageRank
+<pre class="syntax">
+pagerank( vertex_table,
+            vertex_id,
+            edge_table,
+            edge_args,
+            out_table,
+            damping_factor,
+            max_iter,
+            threshold
+          )
+</pre>
+
+\b Arguments
+<dl class="arglist">
+<dt>vertex_table</dt>
+<dd>TEXT. Name of the table containing the vertex data for the graph. Must contain the
+column specified in the 'vertex_id' parameter below.</dd>
+
+<dt>vertex_id</dt>
+<dd>TEXT, Name of the column in 'vertex_table' containing
+vertex ids.  The vertex ids are of type INTEGER with no duplicates.
+They do not need to be contiguous.</dd>
+
+<dt>edge_table</dt>
+<dd>TEXT. Name of the table containing the edge data. The edge table must
+contain columns for source vertex, destination vertex and edge weight.</dd>
+
+<dt>edge_args</dt>
+<dd>TEXT. A comma-delimited string containing multiple named arguments of
+the form "name=value". The following parameters are supported for
+this string argument:
+  - src (INTEGER): Name of the column containing the source vertex ids in the edge table.
+                   Default column name is 'src'.
+  - dest (INTEGER): Name of the column containing the destination vertex ids in the edge table.
+                    Default column name is 'dest'.</dd>
+
+<dt>out_table</dt>
+<dd>TEXT. Name of the table to store the result of PageRank.
+It will contain a row for every vertex from 'vertex_table' with
+the following columns:
+  - vertex_id : The id of a vertex. Will use the input parameter 'vertex_id' for column naming.
+  - pagerank : The vertex's PageRank.</dd>
+
+<dt>damping_factor</dt>
+<dd>FLOAT8, default 0.85. The probability, at any step, that a user will continue following the links,
+in a random surfer model.</dd>
+
+<dt>max_iter</dt>
+<dd>INTEGER, default: 100. The maximum number of iterations allowed.</dd>
+
+<dt>threshold</dt>
+<dd>FLOAT8, default: 1e-5. If the difference between the PageRank of every vertex of two consecutive
+iterations, is smaller than \e threshold, or the iteration number is larger than \e max_iter, the
+computation stops.</dd>
+
+</dl>
+
+@anchor notes
+@par Notes
+
+The PageRank algorithm proposed by Larry Page and Sergey Brin is used [1]. The PageRank of all vertices
+form a probability distribution over the vertices in the graph.
+
+@anchor examples
+@examp
+
+-# Create vertex and edge tables to represent the graph:
+<pre class="syntax">
+DROP TABLE IF EXISTS vertex, edge;
+CREATE TABLE vertex(
+        id INTEGER
+        );
+CREATE TABLE edge(
+        source INTEGER,
+        destin INTEGER
+        );
+INSERT INTO vertex VALUES
+(0),
+(1),
+(2),
+(3),
+(4),
+(5),
+(6);
+INSERT INTO edge VALUES
+(0, 1),
+(0, 2),
+(0, 4),
+(1, 2),
+(1, 3),
+(2, 3),
+(2, 5),
+(2, 6),
+(3, 0),
+(4, 0),
+(5, 6),
+(6, 3);
+</pre>
+
+-# Compute the PageRank:
+<pre class="syntax">
+DROP TABLE IF EXISTS pagerank_out;
+SELECT madlib.pagerank(
+                         'vertex',             -- Vertex table
+                         'id',                 -- Vertix id column
+                         'edge',               -- Edge table
+                         'src=src, dest=dest', -- Comma delimted string of edge arguments
+                         'pagerank_out')       -- Output table of PageRank
+SELECT * FROM pagerank_out ORDER BY pagerank desc;
+</pre>
+<pre class="result">
+ id |      pagerank
+----+--------------------
+  0 |  0.278256122055856
+  3 |  0.201882680839737
+  2 |  0.142878491945534
+  6 |  0.114538731993905
+  1 |  0.100266150276761
+  4 |  0.100266150276761
+  5 |  0.061911672611445
+(7 rows)
+</pre>
+
+@anchor literature
+@par Literature
+
+[1] PageRank algorithm. https://en.wikipedia.org/wiki/PageRank
+*/
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__get_convergence_thresh(
+    threshold FLOAT8
+) RETURNS INTEGER AS $$
+    PythonFunctionBodyOnly(`graph', `pagerank')
+    return pagerank.get_convergence_thresh(threshold)
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+DROP TYPE IF EXISTS __pagerank_src_dest;
+CREATE TYPE __pagerank_src_dest AS (
+  src   text,
+  dest  text
+);
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.__pagerank_validate_graph(
+    vertex_table VARCHAR,
+    vertex_id VARCHAR,
+    edge_table VARCHAR,
+    edge_args VARCHAR,
+    out_table VARCHAR,
+    damping_factor FLOAT8,
+    max_iter INTEGER,
+    threshold FLOAT8,
+    module_name  VARCHAR
+) RETURNS __pagerank_src_dest AS $$
+    PythonFunctionBodyOnly(`graph', `pagerank')
+    return pagerank.validate_pagerank_args(
+        vertex_table, vertex_id, edge_table, edge_args,
+        out_table, damping_factor, max_iter, threshold, module_name
+    )
+$$ LANGUAGE plpythonu VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pagerank(
+    vertex_table    TEXT,
+    vertex_id       TEXT,
+    edge_table      TEXT,
+    edge_args       TEXT,
+    out_table       TEXT,
+    damping_factor  FLOAT8,
+    max_iter        INTEGER,
+    threshold       FLOAT8
+) RETURNS VOID AS $$
+DECLARE
+    cur VARCHAR;
+    message VARCHAR;
+    out_cnts VARCHAR;
+    nrows INTEGER;
+    random_prob FLOAT8;
+    oldClientMinMessages VARCHAR;
+    dest VARCHAR;
+    src VARCHAR;
+    thresh INTEGER;
+    converged INTEGER;
+    sd __pagerank_src_dest;
+    edge_temp_table VARCHAR;
+    iters INTEGER;
+BEGIN
+    cur := 'pagerank_'||md5('pagerank'||now()::text||random()::text)||'_cur';
+    message := 'pagerank_'||md5('pagerank'||now()::text||random()::text)||'_message';
+    out_cnts := 'pagerank_'||md5('pagerank'||now()::text||random()::text)||'_outcnts';
+    edge_temp_table := 'pagerank_'||md5('pagerank'||now()::text||random()::text)||'_edge';
+    EXECUTE 'DROP TABLE IF EXISTS '||cur;
+    EXECUTE 'DROP TABLE IF EXISTS '||message;
+    EXECUTE 'DROP TABLE IF EXISTS '||out_cnts;
+    EXECUTE 'SELECT COUNT(*) FROM '|| vertex_table ||' ' INTO nrows;
+    oldClientMinMessages :=
+    (SELECT setting FROM pg_settings WHERE name = 'client_min_messages');
+    EXECUTE 'SET client_min_messages TO ERROR';
+    SELECT * FROM MADLIB_SCHEMA.__pagerank_validate_graph(vertex_table, vertex_id, edge_table, edge_args,
+    out_table, damping_factor, max_iter, threshold, 'PageRank') INTO sd;
+    src := sd.src;
+    dest := sd.dest;
+    SELECT * FROM MADLIB_SCHEMA.__get_convergence_thresh(threshold) INTO thresh;
+
+    EXECUTE 'DROP TABLE IF EXISTS '||edge_temp_table;
+    EXECUTE 'CREATE TEMP TABLE '||edge_temp_table||' AS
+        SELECT * FROM '||edge_table||'
+        distributed by ('||dest||')'
+    ;
+
+    EXECUTE 'CREATE TABLE '||cur||' AS SELECT '||vertex_id||', CAST(1/'||nrows||' as double precision) AS pagerank FROM '||vertex_table;
+    EXECUTE 'CREATE TABLE ' ||out_cnts||' AS
+    SELECT '||src||' AS '||vertex_id||', COUNT('||dest||') AS cnt
+    FROM '||edge_temp_table||'
+    GROUP BY '||src||'
+    distributed by ('||vertex_id||')';
+    iters := 1;
+    WHILE iters != max_iter LOOP
+        EXECUTE 'DROP TABLE IF EXISTS '||message;
+        EXECUTE 'CREATE TABLE '||message||' AS
+        SELECT '||edge_temp_table||'.'||dest||' as '||vertex_id||', CAST(SUM(__cur2.pagerank/'||out_cnts||'.cnt)*'||damping_factor||' + (1-'||damping_factor||')/'||nrows||' as double precision) as pagerank
+        FROM '||cur||' AS __cur1, '||edge_temp_table||', '||out_cnts||', '||cur||' as __cur2
+        WHERE '||edge_temp_table||'.'||dest||'=__cur1.'||vertex_id||' AND '||out_cnts||'.'||vertex_id||'='||edge_temp_table||'.'||src||' AND __cur2.'||vertex_id||'='||edge_temp_table||'.'||src||
+        ' GROUP BY '||edge_temp_table||'.'||dest;
+
+        EXECUTE 'INSERT INTO '||message||' SELECT '||vertex_id||', CAST((1-'||damping_factor||')/'||nrows||' as double precision) AS pagerank
+        FROM '||cur||' WHERE '||vertex_id||' NOT IN
+        (SELECT '||vertex_id||' FROM '||message||')';
+
+        -- Check for convergence
+        -- EXECUTE 'SELECT (
+        --             CASE WHEN __pagerank_qsub1.pr_array=__pagerank_qsub2.pr_array
+        --             THEN 1
+        --             ELSE 0
+        --             END
+        --         ) AS convergence
+        --         FROM (
+        --             SELECT array_agg(ROUND(CAST("pagerank" AS NUMERIC), '||thresh||')) AS pr_array
+        --             FROM '||cur||'
+        --         ) __pagerank_qsub1, (
+        --             SELECT array_agg(ROUND(CAST("pagerank" AS NUMERIC), '||thresh||')) AS pr_array
+        --             FROM '||message||'
+        --         ) __pagerank_qsub2' INTO converged;
+        -- IF (converged = 1) THEN
+        --     EXIT;
+        -- END IF;
+
+        EXECUTE 'DROP TABLE IF EXISTS '||cur;
+        EXECUTE 'ALTER TABLE '||message||' RENAME TO '||cur;
+        iters := iters + 1;
+    END LOOP;
+    EXECUTE 'ALTER TABLE '||cur||' RENAME TO '||out_table;
+    EXECUTE 'DROP TABLE IF EXISTS '||edge_temp_table;
+    EXECUTE 'DROP TABLE IF EXISTS '||cur;
+    EXECUTE 'DROP TABLE IF EXISTS '||message;
+    EXECUTE 'DROP TABLE IF EXISTS '||out_cnts;
+    EXECUTE 'SET client_min_messages TO ' || oldClientMinMessages;
+END;
+$$ LANGUAGE plpgsql VOLATILE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+-------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pagerank(
+    vertex_table    TEXT,
+    vertex_id       TEXT,
+    edge_table      TEXT,
+    edge_args       TEXT,
+    out_table       TEXT,
+    damping_factor  FLOAT8,
+    max_iter        INTEGER
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.pagerank($1, $2, $3, $4, $5, $6, $7, 0.00001)
+$$ LANGUAGE SQL
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+-------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pagerank(
+    vertex_table    TEXT,
+    vertex_id       TEXT,
+    edge_table      TEXT,
+    edge_args       TEXT,
+    out_table       TEXT,
+    damping_factor  FLOAT8
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.pagerank($1, $2, $3, $4, $5, $6, 100, 0.00001)
+$$ LANGUAGE SQL
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+-------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pagerank(
+    vertex_table    TEXT,
+    vertex_id       TEXT,
+    edge_table      TEXT,
+    edge_args       TEXT,
+    out_table       TEXT
+) RETURNS VOID AS $$
+    SELECT MADLIB_SCHEMA.pagerank($1, $2, $3, $4, $5, 0.85, 100, 0.00001)
+$$ LANGUAGE SQL
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `MODIFIES SQL DATA', `');
+-------------------------------------------------------------------------
+
+-- Online help
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pagerank(
+    message VARCHAR
+) RETURNS VARCHAR AS $$
+    PythonFunction(graph, pagerank, pagerank_help)
+$$ LANGUAGE plpythonu IMMUTABLE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `CONTAINS SQL', `');
+
+--------------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.pagerank()
+RETURNS VARCHAR AS $$
+    SELECT MADLIB_SCHEMA.pagerank('');
+$$ LANGUAGE sql IMMUTABLE
+m4_ifdef(`\_\_HAS_FUNCTION_PROPERTIES\_\_', `CONTAINS SQL', `');
+--------------------------------------------------------------------------------
