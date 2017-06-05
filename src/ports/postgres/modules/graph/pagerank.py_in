@@ -76,6 +76,23 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         @param max_iter
         @param threshold
     """
+    if grouping_cols:
+        groups = [1,2]
+        for gr in groups:
+            temp_table = unique_string(desp='tt')
+            plpy.execute("""create table {temp_table} as
+                select * from {edge_table} where gr={gr}
+                distributed by (dest)""".format(**locals()))
+            temp_out = 'pr_out_table' + str(gr)
+            pagerank_wrap(schema_madlib, vertex_table, vertex_id, temp_table, edge_args,
+            temp_out, damping_factor, max_iter, threshold, '', **kwargs)
+            plpy.execute("drop table temp_table")
+    else:
+        pagerank_wrap(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
+        out_table, damping_factor, max_iter, threshold, grouping_cols, **kwargs)
+
+def pagerank_wrap(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
+    out_table, damping_factor, max_iter, threshold, grouping_cols, **kwargs):
     old_msg_level = plpy.execute("""
                                   SELECT setting
                                   FROM pg_settings
@@ -109,7 +126,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     nvertices = plpy.execute("""
                 SELECT COUNT({0}) AS cnt
                 FROM {1}
-            """.format(vertex_id, vertex_table))[0]["cnt"]
+            """.format(vertex_id, vertex_table))[0]["cnt"]/2
     # A fixed threshold value, of say 1e-5, might not work well when the
     # number of vertices is a billion, since the initial pagerank value
     # of all nodes would then be 1/1e-9. So, assign default threshold
@@ -126,22 +143,22 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
     group_by_clause = ''
     random_prob = ''
 
-    edge_temp_table = unique_string(desp='temp_edge')
-    distribution = m4_ifdef(<!__POSTGRESQL__!>, <!''!>,
-        <!"DISTRIBUTED BY ({0}{1})".format(grouping_cols+','
-            if grouping_cols else '', dest)!>)
-    plpy.execute("DROP TABLE IF EXISTS {0}".format(edge_temp_table))
-    plpy.execute("""CREATE TEMP TABLE {edge_temp_table} AS
-        SELECT * FROM {edge_table}
-        {distribution}
-        """.format(**locals()))
+    edge_temp_table = edge_table #unique_string(desp='temp_edge')
+    # distribution = m4_ifdef(<!__POSTGRESQL__!>, <!''!>,
+    #     <!"DISTRIBUTED BY ({0}{1})".format(grouping_cols+','
+    #         if grouping_cols else '', dest)!>)
+    # plpy.execute("DROP TABLE IF EXISTS {0}".format(edge_temp_table))
+    # plpy.execute("""CREATE TEMP TABLE {edge_temp_table} AS
+    #     SELECT * FROM {edge_table}
+    #     {distribution}
+    #     """.format(**locals()))
     # GPDB and HAWQ have distributed by clauses to help them with indexing.
     # For Postgres we add the index explicitly.
-    sql_index = m4_ifdef(<!__POSTGRESQL__!>,
-        <!"""CREATE INDEX ON {edge_temp_table} ({src});
-        """.format(**locals())!>,
-        <!''!>)
-    plpy.execute(sql_index)
+    # sql_index = m4_ifdef(<!__POSTGRESQL__!>,
+    #     <!"""CREATE INDEX ON {edge_temp_table} ({src});
+    #     """.format(**locals())!>,
+    #     <!''!>)
+    # plpy.execute(sql_index)
 
     # Intermediate tables required.
     cur = unique_string(desp='cur')
