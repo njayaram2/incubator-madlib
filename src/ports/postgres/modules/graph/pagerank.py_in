@@ -77,7 +77,7 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         @param threshold
     """
     if grouping_cols:
-        groups = [1,2]
+        groups = [0,1]
         for gr in groups:
             temp_table = unique_string(desp='tt')
             plpy.execute("""create table {temp_table} as
@@ -86,7 +86,8 @@ def pagerank(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
             temp_out = 'pr_out_table' + str(gr)
             pagerank_wrap(schema_madlib, vertex_table, vertex_id, temp_table, edge_args,
             temp_out, damping_factor, max_iter, threshold, '', **kwargs)
-            plpy.execute("drop table temp_table")
+            plpy.execute("drop table if exists {0}".format(temp_table))
+            plpy.execute("drop table if exists {0},{1}".format('pr_out_table' + str(gr),'pr_out_table' + str(gr)+'_summary'))
     else:
         pagerank_wrap(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
         out_table, damping_factor, max_iter, threshold, grouping_cols, **kwargs)
