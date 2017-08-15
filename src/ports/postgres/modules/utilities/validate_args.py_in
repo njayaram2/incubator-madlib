@@ -2,6 +2,7 @@
 import plpy
 import re
 import string
+import utilities
 
 # Postgresql naming restrictions
 """
@@ -601,6 +602,34 @@ def cols_in_tbl_valid(tbl, cols, module):
         plpy.error(
             "{module} error: Column '{c}' does not exist in table '{tbl}'!".format(**locals()))
 # -------------------------------------------------------------------------
+
+
+def get_grouping_col_str(schema_madlib, module_name, reserved_cols, source_table, grouping_col):
+    if grouping_col and grouping_col.lower() != 'null':
+        cols_in_tbl_valid(source_table,
+                          utilities._string_to_array_with_quotes(grouping_col),
+                          module_name)
+        intersect = frozenset(
+            utilities._string_to_array(grouping_col)).intersection(
+                frozenset(
+                    (reserved_cols)))
+        utilities._assert(len(intersect) == 0,
+                "{0} error: Conflicting grouping column name.\n"
+                "Some predefined keyword(s) ({1}) are not allowed "
+                "for grouping column names!".format(module_name, ', '.join(intersect)))
+
+        grouping_list = [i + "::text"
+                         for i in explicit_bool_to_text(
+                             source_table,
+                             utilities._string_to_array_with_quotes(grouping_col),
+                             schema_madlib)]
+        grouping_str = ','.join(grouping_list)
+    else:
+        grouping_str = "Null"
+        grouping_col = None
+
+    return grouping_str, grouping_col
+# ------------------------------------------------------------------------------
 
 
 def regproc_valid(qualified_name, args_str, module):

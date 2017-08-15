@@ -480,10 +480,7 @@ class GroupIterationController:
             condition: <tt>[...] WHERE _state._iteration = {iteration}</tt>
 
         This updates the current inter-iteration state to the result of
-        evaluating \c newState. If <tt>self.truncAfterIteration</tt> is true,
-        this will replace the old state, otherwise the history of all old states
-        is kept.
-        """
+        evaluating \c newState. """
         newState = newState.format(**self.kwargs)
         self.iteration = self.iteration + 1
 
