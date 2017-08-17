@@ -34,7 +34,7 @@ from utilities.utilities import _assert
 from utilities.utilities import _assert_equal
 from utilities.utilities import unique_string
 from utilities.utilities import _string_to_array_with_quotes
-from utilities.utilities import strip_end_quotes
+from utilities.utilities import strip_end_quotes, split_quoted_delimited_str
 from utilities.validate_args import cols_in_tbl_valid
 from utilities.validate_args import get_grouping_col_str
 from utilities.validate_args import table_exists
@@ -147,18 +147,40 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
 
     # Need layers sizes before validating for warm_start
 
-    coeff = []
-    if warm_start:
-        coeff, x_means, x_stds = _validate_warm_start(
-            source_table, output_table, summary_table, independent_varname,
-            original_dependent_varname, layer_sizes, optimizer_params,
-            is_classification, weights, warm_start, activation)
-        plpy.execute("DROP TABLE IF EXISTS {0}".format(output_table))
-        plpy.execute("DROP TABLE IF EXISTS {0}".format(summary_table))
     best_state = []
     best_loss = [float('inf')]
     prev_loss = float('inf')
     loss = None
+    if grouping_col and warm_start:
+        grouping_col_list = split_quoted_delimited_str(grouping_cols)
+        join_condition = ' AND '.join(['q.{col}={{as_rel_source}}.{col}'.format(**locals()) for col in grouping_col_list])
+        start_coeff = """SELECT coeff FROM {output_table} as p, {{as_rel_source}}
+            WHERE {join_condition}
+        """.format(**locals())
+    else:
+        coeff = []
+        if warm_start:
+            coeff, x_means, x_stds = _validate_warm_start(
+                source_table, output_table, summary_table, independent_varname,
+                original_dependent_varname, layer_sizes, optimizer_params,
+                is_classification, weights, warm_start, activation)
+            plpy.execute("DROP TABLE IF EXISTS {0}".format(output_table))
+            plpy.execute("DROP TABLE IF EXISTS {0}".format(summary_table))
+        else:
+            for i in range(len(layer_sizes) - 1):
+                fan_in = layer_sizes[i]
+                fan_out = layer_sizes[i + 1]
+                # Initalize according to Glorot and Bengio (2010)
+                # See design doc for more info
+                span = math.sqrt(6.0 / (fan_in + fan_out))
+                dim = (layer_sizes[i] + 1) * layer_sizes[i + 1]
+                rand = plpy.execute("""SELECT array_agg({span}*2*(random()-0.5))
+                                       AS random
+                                       FROM generate_series(0,{dim})
+                        """.format(span=span, dim=dim))[0]["random"]
+                coeff += rand
+        start_coeff = py_list_to_sql_string(
+            coeff, array_type="DOUBLE PRECISION")
     it_args = {
         "schema_madlib": schema_madlib,
         "independent_varname": independent_varname,
@@ -173,8 +195,7 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
         "is_classification": int(is_classification),
         "weights": weights,
         "warm_start": warm_start,
-        "start_coeff": py_list_to_sql_string(
-            coeff, array_type="DOUBLE PRECISION"),
+        "start_coeff": start_coeff,
         "n_tuples": n_tuples,
         "n_iterations": n_iterations,
         "tolerance": tolerance,
@@ -212,21 +233,21 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
 
     temp_output_table = unique_string(desp='temp_output_table')
     for _ in range(n_tries):
-        coeff = []
-        for i in range(len(layer_sizes) - 1):
-            fan_in = layer_sizes[i]
-            fan_out = layer_sizes[i + 1]
-            # Initalize according to Glorot and Bengio (2010)
-            # See design doc for more info
-            span = math.sqrt(6.0 / (fan_in + fan_out))
-            dim = (layer_sizes[i] + 1) * layer_sizes[i + 1]
-            rand = plpy.execute("""SELECT array_agg({span}*2*(random()-0.5))
-                                   AS random
-                                   FROM generate_series(0,{dim})
-                    """.format(span=span, dim=dim))[0]["random"]
-            coeff += rand
-        it_args['start_coeff'] = py_list_to_sql_string(
-            coeff, "double precision")
+        # coeff = []
+        # for i in range(len(layer_sizes) - 1):
+        #     fan_in = layer_sizes[i]
+        #     fan_out = layer_sizes[i + 1]
+        #     # Initalize according to Glorot and Bengio (2010)
+        #     # See design doc for more info
+        #     span = math.sqrt(6.0 / (fan_in + fan_out))
+        #     dim = (layer_sizes[i] + 1) * layer_sizes[i + 1]
+        #     rand = plpy.execute("""SELECT array_agg({span}*2*(random()-0.5))
+        #                            AS random
+        #                            FROM generate_series(0,{dim})
+        #             """.format(span=span, dim=dim))[0]["random"]
+        #     coeff += rand
+        # it_args['start_coeff'] = py_list_to_sql_string(
+        #     coeff, "double precision")
         iterationCtrl = GroupIterationController(it_args)
         with iterationCtrl as it:
             it.iteration = 0
@@ -253,15 +274,12 @@ def mlp(schema_madlib, source_table, output_table, independent_varname,
                     {is_classification},
                     ({weights})::DOUBLE PRECISION,
                     {warm_start},
-                    ({join_coeff})::DOUBLE PRECISION[],
+                    ({start_coeff})::DOUBLE PRECISION[],
                     {n_tuples},
                     {lmbda},
                     {x_means},
                     {x_stds}
                 )
-                join
-                output table
-                where grp_col = grpcol
                 """)
 
                 if it.test(
@@ -354,7 +372,7 @@ def _create_output_table(output_table, temp_output_table, grouping_col):
     if grouping_col:
         grouping_col_comma = grouping_col + ","
         partition_by = " PARTITION BY {0} ".format(grouping_col)
-    plpy.info(plpy.execute("select * from "+temp_output_table))
+    # plpy.info(plpy.execute("select * from "+temp_output_table))
     build_output_query = """
     CREATE TABLE {output_table} AS
     SELECT {grouping_col_comma} coeff, loss, num_iterations FROM
