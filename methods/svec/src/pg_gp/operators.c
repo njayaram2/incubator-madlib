@@ -427,12 +427,24 @@ Datum svec_minus(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1( svec_plus );
-Datum svec_plus(PG_FUNCTION_ARGS)
-{
+Datum svec_plus(PG_FUNCTION_ARGS) {
+	elog(INFO, "starting svec plus");
+	SvecType *svec1 = PG_GETARG_SVECTYPE_P(0);
+
+	/* calling the function sdata_from_svec causes orca to error out with
+	FailedAssertion("!(equal(qcopy, query) && "Preprocessing should not modify original query object")", File: "transform.c", Line: 60)*/
+	SparseData left = sdata_from_svec(svec1);
+
+	SvecType *result = svec_make_scalar(99);// this value does not matter
+	PG_RETURN_SVECTYPE_P(result);
+}
+
+PG_FUNCTION_INFO_V1( svec_plus_old );
+Datum svec_plus_old(PG_FUNCTION_ARGS) {
 	SvecType *svec1 = PG_GETARG_SVECTYPE_P(0);
 	SvecType *svec2 = PG_GETARG_SVECTYPE_P(1);
-	check_dimension(svec1,svec2,"svec_plus");
-	SvecType *result = op_svec_by_svec_internal(add,svec1,svec2);
+	check_dimension(svec1, svec2, "svec_plus");
+	SvecType *result = op_svec_by_svec_internal(add, svec1, svec2);
 	PG_RETURN_SVECTYPE_P(result);
 }
 
