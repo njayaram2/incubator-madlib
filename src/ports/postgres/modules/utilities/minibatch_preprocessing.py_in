@@ -77,9 +77,10 @@ class MiniBatchPreProcessor:
         # Get array expressions for both dep and indep variables from the
         # MiniBatchQueryFormatter class
         qry_formatter = MiniBatchQueryFormatter(self.source_table)
-        dep_var_array_str, dep_var_classes_str = qry_formatter.\
-            get_dep_var_array_and_classes(self.dependent_varname,
-                                          self.one_hot_encode_int_dep_var)
+        dep_var_array_str, dep_var_classes_str, dependent_var_dbtype = \
+            qry_formatter.get_dep_var_array_and_classes(
+                            self.dependent_varname,
+                            self.one_hot_encode_int_dep_var)
         indep_var_array_str = qry_formatter.get_indep_var_array_str(
                                               self.independent_varname)
 
@@ -266,6 +267,7 @@ class MiniBatchQueryFormatter:
                         transformed_value = ARRAY[[rings1=1, rings1=2], [rings2=1,
                                                     rings2=2], []]
                         class_level_str = 'NULL::TEXT'
+            3. The type of the input dependent variable.
         """
         dep_var_class_value_str = 'NULL::TEXT'
         dependent_var_dbtype = get_expr_type(dependent_varname, self.source_table)
@@ -296,7 +298,7 @@ class MiniBatchQueryFormatter:
         else:
             plpy.error("Invalid dependent variable type. It should be text, "
                        "boolean, numeric, or array.")
-        return dep_var_array_str, dep_var_class_value_str
+        return dep_var_array_str, dep_var_class_value_str, dependent_var_dbtype
 
     def _get_one_hot_encoded_str(self, var_name, var_classes, to_quote=True):
         one_hot_list = []
