@@ -30,6 +30,7 @@ from utilities import _assert
 from utilities import get_seg_number
 from utilities import is_platform_pg
 from utilities import is_psql_numeric_type
+from utilities import is_psql_int_type
 from utilities import is_string_formatted_as_array_expression
 from utilities import py_list_to_sql_string
 from utilities import split_quoted_delimited_str
@@ -47,6 +48,7 @@ m4_changequote(`<!', `!>')
 MINIBATCH_OUTPUT_DEPENDENT_COLNAME = "dependent_varname"
 MINIBATCH_OUTPUT_INDEPENDENT_COLNAME = "independent_varname"
 
+
 class MiniBatchPreProcessor:
     """
     This class is responsible for executing the main logic of mini batch
@@ -55,7 +57,7 @@ class MiniBatchPreProcessor:
     """
     def __init__(self, schema_madlib, source_table, output_table,
                   dependent_varname, independent_varname, grouping_cols,
-                  buffer_size, **kwargs):
+                  buffer_size, one_hot_encode_int_dep_var, **kwargs):
         self.schema_madlib = schema_madlib
         self.source_table = source_table
         self.output_table = output_table
@@ -63,22 +65,21 @@ class MiniBatchPreProcessor:
         self.independent_varname = independent_varname
         self.buffer_size = buffer_size
         self.grouping_cols = grouping_cols
+        self.one_hot_encode_int_dep_var = one_hot_encode_int_dep_var
 
         self.module_name = "minibatch_preprocessor"
         self.output_standardization_table = add_postfix(self.output_table,
-                                                   "_standardization")
+                                                        "_standardization")
         self.output_summary_table = add_postfix(self.output_table, "_summary")
         self._validate_minibatch_preprocessor_params()
 
     def minibatch_preprocessor(self):
         # Get array expressions for both dep and indep variables from the
         # MiniBatchQueryFormatter class
-        dependent_var_dbtype = get_expr_type(self.dependent_varname,
-                                             self.source_table)
         qry_formatter = MiniBatchQueryFormatter(self.source_table)
         dep_var_array_str, dep_var_classes_str = qry_formatter.\
             get_dep_var_array_and_classes(self.dependent_varname,
-                                          dependent_var_dbtype)
+                                          self.one_hot_encode_int_dep_var)
         indep_var_array_str = qry_formatter.get_indep_var_array_str(
                                               self.independent_varname)
 
@@ -90,14 +91,12 @@ class MiniBatchPreProcessor:
                                              self.output_standardization_table)
 
         num_rows_processed, num_missing_rows_skipped = self.\
-                                                _get_skipped_rows_processed_count(
-                                                dep_var_array_str,
-                                                indep_var_array_str)
+            _get_skipped_rows_processed_count(dep_var_array_str,
+                                              indep_var_array_str)
         calculated_buffer_size = MiniBatchBufferSizeCalculator.\
-                                         calculate_default_buffer_size(
-                                         self.buffer_size,
-                                         num_rows_processed,
-                                         standardizer.independent_var_dimension)
+            calculate_default_buffer_size(self.buffer_size,
+                                          num_rows_processed,
+                                          standardizer.independent_var_dimension)
         """
         This query does the following:
         1. Standardize the independent variables in the input table
@@ -150,19 +149,18 @@ class MiniBatchPreProcessor:
             ) sub_query_2
             GROUP BY {row_id} {grouping_cols_group_by}
             {distributed_by_clause}
-            """.format(
-            schema_madlib=self.schema_madlib,
-            source_table=self.source_table,
-            output_table=self.output_table,
-            dependent_varname=self.dependent_varname,
-            independent_varname=self.independent_varname,
-            buffer_size = calculated_buffer_size,
-            dep_colname=MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
-            ind_colname=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
-            row_id = unique_row_id,
-            distributed_by_clause = '' if is_platform_pg() else
-                                    'DISTRIBUTED RANDOMLY',
-            **locals())
+            """.format(schema_madlib=self.schema_madlib,
+                       source_table=self.source_table,
+                       output_table=self.output_table,
+                       dependent_varname=self.dependent_varname,
+                       independent_varname=self.independent_varname,
+                       buffer_size=calculated_buffer_size,
+                       dep_colname=MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
+                       ind_colname=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
+                       row_id=unique_row_id,
+                       distributed_by_clause='' if is_platform_pg() else
+                                             'DISTRIBUTED RANDOMLY',
+                       **locals())
         plpy.execute(sql)
 
         standardizer.create_output_standardization_table()
@@ -233,76 +231,78 @@ class MiniBatchPreProcessor:
 
         return num_rows_processed, num_missing_rows_skipped
 
+
 class MiniBatchQueryFormatter:
-    """
-    This class is responsible for formatting the independent and dependent
+    """ This class is responsible for formatting the independent and dependent
     variables into arrays so that they can be matrix agged by the preprocessor
     class.
     """
     def __init__(self, source_table):
         self.source_table = source_table
 
-    def get_dep_var_array_and_classes(self, dependent_varname,
-                                      dependent_var_dbtype):
+    def get_dep_var_array_and_classes(self,
+                                      dependent_varname,
+                                      to_one_hot_encode_int=False):
         """
         :param dependent_varname: Name of the dependent variable
-        :param dependent_var_dbtype: Type of the dependent variable as stored in
-                                     postgres
+        :param to_one_hot_encode_int: Boolean to determine if dependent
+                                            variable needs to be one hot encoded
+                                            (independent of type)
         :return:
-        This function returns a tuple of
-        1. A string with transformed dependent varname depending on it's type
-        2. All the distinct dependent class levels encoded as a string
+            This function returns a tuple of
+            1. A string with transformed dependent varname depending on it's type
+            2. All the distinct dependent class levels encoded as a string
 
-        If dep_type == numeric , do not encode
-                1. dependent_varname = rings
-                    transformed_value = ARRAY[[rings1], [rings2], []]
-                    class_level_str = ARRAY[rings = 'rings1',
-                                            rings = 'rings2']::integer[]
-                2. dependent_varname = ARRAY[a, b, c]
-                    transformed_value = ARRAY[[a1, b1, c1], [a2, b2, c2], []]
-                    class_level_str = 'NULL::TEXT'
-        else if dep_type in ("text", "boolean"), encode:
-                3. dependent_varname = rings (encoding)
-                    transformed_value = ARRAY[[rings1=1, rings1=2], [rings2=1,
-                                                rings2=2], []]
-                    class_level_str = 'NULL::TEXT'
+            If dep_type == numeric , do not encode
+                    1. dependent_varname = rings
+                        transformed_value = ARRAY[[rings1], [rings2], []]
+                        class_level_str = ARRAY[rings = 'rings1',
+                                                rings = 'rings2']::integer[]
+                    2. dependent_varname = ARRAY[a, b, c]
+                        transformed_value = ARRAY[[a1, b1, c1], [a2, b2, c2], []]
+                        class_level_str = 'NULL::TEXT'
+            else if dep_type in ("text", "boolean"), encode:
+                    3. dependent_varname = rings (encoding)
+                        transformed_value = ARRAY[[rings1=1, rings1=2], [rings2=1,
+                                                    rings2=2], []]
+                        class_level_str = 'NULL::TEXT'
         """
         dep_var_class_value_str = 'NULL::TEXT'
-        if dependent_var_dbtype in ("text", "boolean"):
-            # for encoding, and since boolean can also be a logical expression,
-            # there is a () for {dependent_varname} to make the query work
+        dependent_var_dbtype = get_expr_type(dependent_varname, self.source_table)
+        is_dep_var_int_type = is_psql_int_type(dependent_var_dbtype)
+        to_one_hot_encode = (dependent_var_dbtype in ("text", "boolean") or
+                                (to_one_hot_encode_int and
+                                    is_dep_var_int_type))
+        if to_one_hot_encode:
+            # for encoding, since dependent_varname can also be a logical
+            # expression, there is a () around it
             dep_level_sql = """
-            SELECT DISTINCT ({dependent_varname}) AS class
-            FROM {source_table} where ({dependent_varname}) is NOT NULL
-            """.format(dependent_varname=dependent_varname,
-                       source_table=self.source_table)
+                SELECT DISTINCT ({dependent_varname}) AS class
+                FROM {source_table}
+                WHERE ({dependent_varname}) is NOT NULL
+                """.format(dependent_varname=dependent_varname,
+                           source_table=self.source_table)
             dep_levels = plpy.execute(dep_level_sql)
-
-            # this is string sorting
-            dep_var_classes = sorted(
-                ["{0}".format(l["class"]) for l in dep_levels])
-
-            dep_var_array_str = self._get_one_hot_encoded_str(dependent_varname,
-                                                              dep_var_classes)
+            dep_var_classes = sorted(l["class"] for l in dep_levels)
+            dep_var_array_str = self._get_one_hot_encoded_str(
+                dependent_varname, dep_var_classes,
+                to_quote=not is_dep_var_int_type)
             dep_var_class_value_str = py_list_to_sql_string(dep_var_classes,
                                          array_type=dependent_var_dbtype)
-
         elif "[]" in dependent_var_dbtype:
             dep_var_array_str = dependent_varname
-
         elif is_psql_numeric_type(dependent_var_dbtype):
             dep_var_array_str = 'ARRAY[{0}]'.format(dependent_varname)
-
         else:
-            plpy.error("""Invalid dependent variable type. It should be text,
-                boolean, numeric, or an array.""")
-
+            plpy.error("Invalid dependent variable type. It should be text, "
+                       "boolean, numeric, or array.")
         return dep_var_array_str, dep_var_class_value_str
 
-    def _get_one_hot_encoded_str(self, var_name, var_classes):
+    def _get_one_hot_encoded_str(self, var_name, var_classes, to_quote=True):
         one_hot_list = []
         for c in var_classes:
-            one_hot_list.append("({0}) = '{1}'".format(var_name, c))
+            c_str = "'{0}'".format(c) if to_quote else c
+            one_hot_list.append("({0}) = {1}".format(var_name, c_str))
 
         return 'ARRAY[{0}]::integer[]'.format(','.join(one_hot_list))
 
@@ -321,6 +321,7 @@ class MiniBatchQueryFormatter:
         typecasted_ind_varname = "{0}::double precision[]".format(
                                                             independent_varname)
         return typecasted_ind_varname
+
 
 class MiniBatchStandardizer:
     """
@@ -378,67 +379,52 @@ class MiniBatchStandardizer:
             return self._get_query_for_standardizing_without_grouping()
 
     def _get_query_for_standardizing_without_grouping(self):
-        query="""
-        SELECT
-        {dep_var_array_str} as {dep_colname},
-        {schema_madlib}.utils_normalize_data
-        (
-            {indep_var_array_str},'{x_mean_str}'::double precision[],
-            '{x_std_dev_str}'::double precision[]
-        ) as {ind_colname}
-        FROM {source_table}
-        """.format(
-            source_table = self.source_table,
-            schema_madlib = self.schema_madlib,
-            dep_var_array_str = self.dep_var_array_str,
-            indep_var_array_str = self.indep_var_array_str,
-            dep_colname = MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
-            ind_colname = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
-            x_mean_str = self.x_mean_str,
-            x_std_dev_str = self.x_std_dev_str)
-        return query
+        return """
+            SELECT
+                {self.dep_var_array_str} AS {dep_colname},
+                {self.schema_madlib}.utils_normalize_data(
+                    {self.indep_var_array_str},
+                    '{self.x_mean_str}'::double precision[],
+                    '{self.x_std_dev_str}'::double precision[]
+                ) AS {ind_colname}
+            FROM {self.source_table}
+        """.format(dep_colname=MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
+                   ind_colname=MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
+                   self=self)
 
     def _get_query_for_standardizing_with_grouping(self):
-        query="""
-        SELECT
-        {dep_var_array_str} as {dep_colname},
-        {schema_madlib}.utils_normalize_data
-        (
-            {indep_var_array_str},__x__.mean::double precision[], __x__.std::double precision[]
-        ) as {ind_colname},
-        {source_table}.{grouping_cols}
-        FROM
-        {source_table} INNER JOIN {x_mean_table} AS __x__ ON  {source_table}.{grouping_cols} = __x__.{grouping_cols}
-        """.format(
-            source_table = self.source_table,
-            schema_madlib = self.schema_madlib,
-            dep_var_array_str = self.dep_var_array_str,
-            indep_var_array_str = self.indep_var_array_str,
-            dep_colname = MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
-            ind_colname = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME,
-            grouping_cols = self.grouping_cols,
-            x_mean_table = self.x_mean_table,
-            **locals())
-        return query
+        return """
+            SELECT
+                {self.dep_var_array_str} as {dep_colname},
+                {self.schema_madlib}.utils_normalize_data(
+                    {self.indep_var_array_str},
+                    __x__.mean::double precision[],
+                    __x__.std::double precision[]
+                ) AS {ind_colname},
+                {self.source_table}.{self.grouping_cols}
+            FROM
+                {self.source_table}
+                INNER JOIN
+                {self.x_mean_table} AS __x__
+                ON  {self.source_table}.{self.grouping_cols} = __x__.{self.grouping_cols}
+        """.format(self=self,
+                   dep_colname = MINIBATCH_OUTPUT_DEPENDENT_COLNAME,
+                   ind_colname = MINIBATCH_OUTPUT_INDEPENDENT_COLNAME)
 
     def create_output_standardization_table(self):
         if self.grouping_cols:
             query = """
-            ALTER TABLE {x_mean_table} RENAME TO {output_standardization_table}
-            """.format(
-            x_mean_table = self.x_mean_table,
-            output_standardization_table = self.output_standardization_table)
+                ALTER TABLE {self.x_mean_table}
+                    RENAME TO {self.output_standardization_table}
+            """.format(self=self)
         else:
             query = """
-            CREATE TABLE {output_standardization_table} AS
-            select '{x_mean_str}'::double precision[] AS mean,
-            '{x_std_dev_str}'::double precision[] AS std
-            """.format(
-            output_standardization_table = self.output_standardization_table,
-            x_mean_str = self.x_mean_str,
-            x_std_dev_str = self.x_std_dev_str)
-
+                CREATE TABLE {self.output_standardization_table} AS
+                SELECT '{self.x_mean_str}'::double precision[] AS mean,
+                       '{self.x_std_dev_str}'::double precision[] AS std
+            """.format(self=self)
         plpy.execute(query)
+
 
 class MiniBatchSummarizer:
     @staticmethod
@@ -484,6 +470,7 @@ class MiniBatchSummarizer:
                                     if grouping_cols else "NULL")
         plpy.execute(query)
 
+
 class MiniBatchBufferSizeCalculator:
     """
     This class is responsible for calculating the buffer size.
@@ -512,6 +499,7 @@ class MiniBatchBufferSizeCalculator:
            to be an int
         """
         return int(ceil(default_buffer_size))
+
 
 class MiniBatchDocumentation:
     @staticmethod
