@@ -126,15 +126,16 @@ IGD<State, ConstState, Task>::merge(state_type &state,
             a buffer. Note that this still does not randomize rows within
             a batch.
         */
-        int random_curr_batch[n_batches];
-        for(int i=0; i<n_batches; i++) {
-            random_curr_batch[i] = i;
-        }
-        int curr_batch_row_index = 0;
-        std::random_shuffle(&random_curr_batch[0], &random_curr_batch[n_batches]);
-        for (int i=0; i < n_batches; i++) {
-            int curr_batch = random_curr_batch[i];
-            int curr_batch_row_index = curr_batch * batch_size;
+        // int random_curr_batch[n_batches];
+        // for(int i=0; i<n_batches; i++) {
+        //     random_curr_batch[i] = i;
+        // }
+        // int curr_batch_row_index = 0;
+        // std::random_shuffle(&random_curr_batch[0], &random_curr_batch[n_batches]);
+        for (int curr_batch=0, curr_batch_row_index=0; curr_batch < n_batches;
+             curr_batch++, curr_batch_row_index += batch_size) {
+            // int curr_batch = random_curr_batch[i];
+            // int curr_batch_row_index = curr_batch * batch_size;
             Matrix X_batch;
             Matrix Y_batch;
             if (curr_batch == n_batches-1) {
@@ -155,7 +156,6 @@ IGD<State, ConstState, Task>::merge(state_type &state,
     }
     return;
  }
-
 
 template <class State, class ConstState, class Task>
 void
