@@ -137,7 +137,7 @@ def wcc(schema_madlib, vertex_table, vertex_id, edge_table, edge_args,
 
     if grouping_cols:
         distribution = ('' if is_platform_pg() else
-                        "DISTRIBUTED BY ({0}, {1})".format(grouping_cols))
+                        "DISTRIBUTED BY ({0})".format(grouping_cols))
         # Update some variables useful for grouping based query strings
         subq = unique_string(desp='subquery')
         distinct_grp_table = unique_string(desp='grptable')
